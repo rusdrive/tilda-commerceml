@@ -20,10 +20,10 @@ SCHEMA_VERSION = "2.04"
 
 # Служебные Ид. Постоянные — чтобы Тильда каждый раз видела тот же классификатор,
 # а не заводила новый.
-CLASSIFIER_ID = "motosearch-classifier"
-CATALOG_ID = "motosearch-catalog"
-OFFER_PACK_ID = "motosearch-offers"
-PRICE_TYPE_ID = "motosearch-price-retail"
+CLASSIFIER_ID = "cml-classifier"
+CATALOG_ID = "cml-catalog"
+OFFER_PACK_ID = "cml-offers"
+PRICE_TYPE_ID = "cml-price-retail"
 PRICE_TYPE_NAME = "Розничная"
 CURRENCY = "RUB"
 UNIT = "шт"

@@ -54,7 +54,7 @@ def snapshot(cfg):
         print("Ссылку берут в Тильде: Каталог → ••• → Скачать список товаров в YML → "
               "включить «Ссылка на YML».")
         return None
-    req = urllib.request.Request(url, headers={"User-Agent": "motosearch-cml-probe"})
+    req = urllib.request.Request(url, headers={"User-Agent": "tilda-commerceml-probe"})
     with urllib.request.urlopen(req, timeout=180, context=_CTX) as resp:
         raw = resp.read()
     root = ET.fromstring(raw)
@@ -272,7 +272,7 @@ def cmd_imagefiles(cfg, paths, group_id=None, group_name=None):
         product["group_id"] = group_id
         groups = [{"id": group_id, "name": group_name or group_id}]
     imp = build_import_xml([product], _today(), groups=groups)
-    name = f"import0_{_stamp()}.xml"   # имя не повторяем: см. README
+    name = "import0_1.xml"   # только формат 1С, иначе Тильда молча не импортирует
     c.upload(name, imp)
     c.do_import(name)
     c.save_log(os.path.join(WORK, f"log-imagefiles-{_stamp()}.json"))
@@ -305,7 +305,7 @@ def cmd_imagefile(cfg, local_path, group_id=None, group_name=None):
     c.connect()
     print(f"\nЗаливаю картинку {rel} ({len(blob)} байт)")
     c.upload(rel, blob)
-    name = f"import0_{_stamp()}.xml"   # имя не повторяем: см. README
+    name = "import0_1.xml"   # только формат 1С, иначе Тильда молча не импортирует
     c.upload(name, imp)
     c.do_import(name)
     c.save_log(os.path.join(WORK, f"log-imagefile-{_stamp()}.json"))

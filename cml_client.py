@@ -27,6 +27,7 @@ import base64
 import json
 import os
 import ssl
+import sys
 import time
 import urllib.error
 import urllib.parse
@@ -34,16 +35,50 @@ import urllib.request
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 
-# Python 3.14 на маке без certifi не находит корневые сертификаты (как в tilda_api.py).
-_CTX = ssl.create_default_context()
-_CTX.check_hostname = False
-_CTX.verify_mode = ssl.CERT_NONE
-
 DEFAULT_UA = "1C+Enterprise/8.3"
 
 
 class CommerceMLError(RuntimeError):
     """Сервер ответил не 'success' (или не ответил вовсе)."""
+
+
+def make_ssl_context(insecure=False, ca_file=None):
+    """Контекст TLS с настоящей проверкой сертификата.
+
+    Логин и пароль коннектора уходят обычной basic-аутентификацией, то есть по сути
+    открытым текстом. Отключать проверку сертификата здесь нельзя.
+
+    Порядок: явный `ca_file` → системные корневые сертификаты → certifi. Если ничего
+    нет, это ошибка с понятной подсказкой, а не молчаливый переход на незащищённое
+    соединение.
+    """
+    if insecure:
+        print("ВНИМАНИЕ: проверка сертификата отключена — пароль уходит по "
+              "непроверенному соединению", file=sys.stderr)
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        return ctx
+    if ca_file:
+        return ssl.create_default_context(cafile=ca_file)
+    ctx = ssl.create_default_context()
+    if ctx.get_ca_certs():
+        return ctx
+    # Сборки Python с python.org на macOS идут без системных сертификатов.
+    try:
+        import certifi
+    except ImportError:
+        raise CommerceMLError(
+            "Не найдены корневые сертификаты. Установите certifi "
+            "(pip install certifi) или запустите «Install Certificates.command» из "
+            "папки установленного Python. Отключать проверку TLS нельзя: по этому "
+            "соединению уходит пароль от каталога."
+        )
+    return ssl.create_default_context(cafile=certifi.where())
+
+
+# Общий контекст для утилит, которым не нужен экземпляр клиента (например probe.py).
+_CTX = make_ssl_context()
 
 
 def load_config(path=CONFIG_PATH):
@@ -66,12 +101,17 @@ def load_config(path=CONFIG_PATH):
 
 class CommerceML:
     def __init__(self, url=None, login=None, password=None, config_path=CONFIG_PATH,
-                 timeout=120, verbose=True):
+                 timeout=120, verbose=True, insecure=None, ca_file=None):
+        cfg = {}
         if url is None or login is None or password is None:
             cfg = load_config(config_path)
             url = url or cfg["url"]
             login = login or cfg["login"]
             password = password or cfg["password"]
+        if insecure is None:
+            insecure = bool(cfg.get("insecure"))
+        self.ssl_context = make_ssl_context(insecure=insecure,
+                                            ca_file=ca_file or cfg.get("ca_file"))
         self.url = url.rstrip("/") + "/"
         self._basic = base64.b64encode(f"{login}:{password}".encode()).decode()
         self.timeout = timeout
@@ -99,7 +139,8 @@ class CommerceML:
         req = urllib.request.Request(url, data=body, headers=headers,
                                      method="POST" if body is not None else "GET")
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout, context=_CTX) as resp:
+            with urllib.request.urlopen(req, timeout=self.timeout,
+                                       context=self.ssl_context) as resp:
                 raw = resp.read()
                 status = resp.status
         except urllib.error.HTTPError as e:
@@ -149,6 +190,12 @@ class CommerceML:
                     self.file_limit = int(ln.split("=", 1)[1].strip())
                 except ValueError:
                     pass
+        if self.zip_required:
+            raise CommerceMLError(
+                "Сервер требует zip (init вернул zip=yes), а этот клиент шлёт "
+                "обычные XML. Продолжать нельзя: обмен уйдёт в неподдерживаемом "
+                "формате."
+            )
         return {"zip": self.zip_required, "file_limit": self.file_limit}
 
     def upload(self, filename, data):
@@ -156,7 +203,11 @@ class CommerceML:
         изменения происходят только на шаге import."""
         if isinstance(data, str):
             data = data.encode("windows-1251", "xmlcharrefreplace")
-        limit = self.file_limit or len(data) or 1
+        if not data:
+            # Иначе цикл ниже не выполнится ни разу и вернёт успех, не отправив
+            # на сервер ни одного запроса — ложный успех на пустом месте.
+            raise CommerceMLError(f"нечего заливать: {filename} пустой")
+        limit = self.file_limit or len(data)
         sent = 0
         while sent < len(data):
             chunk = data[sent:sent + limit]
