@@ -10,9 +10,24 @@
 
 Модуль ничего не отправляет и не требует сети, кроме verify_by_yml.
 """
+import os
 import re
+import time
 import urllib.request
 import xml.etree.ElementTree as ET
+
+
+class Snapshot(dict):
+    """Снимок каталога плюс отметка времени, когда Tilda собрала выгрузку.
+
+    Ведёт себя как обычный словарь {артикул: {...}}, но помнит `date` из атрибута
+    `yml_catalog date="…"`. Без неё нельзя отличить «изменений нет» от «фид ещё не
+    пересобрался», а это разные вещи: первое — тревога, второе — просто подождать.
+    """
+
+    def __init__(self, items, date=None):
+        super().__init__(items)
+        self.date = date
 
 # --- 1. Валидация ---------------------------------------------------------
 
@@ -185,6 +200,7 @@ def fetch_snapshot(yml_url, timeout=180, context=None, attempts=3):
         except ET.ParseError as e:
             last = e
             continue
+        feed_date = root.get("date")
         items = {}
         for offer in root.iter("offer"):
             def txt(tag):
@@ -199,7 +215,7 @@ def fetch_snapshot(yml_url, timeout=180, context=None, attempts=3):
                 "categoryId": txt("categoryId"),
                 "pictures": len(offer.findall("picture")),
             }
-        return items
+        return Snapshot(items, feed_date)
     raise RuntimeError(f"YML не удалось разобрать за {attempts} попыток: {last}")
 
 
@@ -210,9 +226,12 @@ def verify(before, after, offers=None, products=None):
         verified — всё ожидаемое подтвердилось
         partial  — часть изменений не видна
         failed   — не подтвердилось ничего, хотя изменения ожидались
+        pending  — выгрузка ещё не пересобралась, судить рано
         unknown  — ожидать было нечего
     """
     expected, confirmed, missing = 0, 0, []
+    stale = (getattr(before, "date", None) is not None
+             and getattr(before, "date", None) == getattr(after, "date", None))
 
     for o in offers or []:
         ext = str(o.get("id", ""))
@@ -243,5 +262,96 @@ def verify(before, after, offers=None, products=None):
         return "unknown", ["нечего было проверять"]
     if confirmed == expected:
         return "verified", [f"подтверждено изменений: {confirmed} из {expected}"]
+    if stale:
+        # Выгрузка та же самая — Tilda её ещё не пересобрала. Объявлять провал рано:
+        # это ожидание, а не расхождение.
+        return "pending", [f"выгрузка не обновилась (та же дата {after.date}), "
+                           f"подтверждено {confirmed} из {expected} — ждём"]
     status = "failed" if confirmed == 0 else "partial"
     return status, [f"подтверждено {confirmed} из {expected}"] + missing[:20]
+
+
+def wait_and_verify(yml_url, before, offers=None, products=None,
+                    max_wait=1200, poll=90, context=None, log=print):
+    """Дождаться пересборки выгрузки и вынести окончательный вердикт.
+
+    `pending` — не результат, а состояние ожидания: выгрузка обновляется около десяти
+    минут, и проверять раньше бессмысленно. Здесь мы ждём, пока она пересоберётся, и
+    только потом судим. Если за отведённый срок она так и не обновилась, возвращаем
+    `pending` честно — это не то же самое, что «изменения не применились».
+    """
+    deadline = time.time() + max_wait
+    status, lines = "pending", ["проверка ещё не начиналась"]
+    while True:
+        try:
+            after = fetch_snapshot(yml_url, context=context)
+        except Exception as e:                      # фид часто отдаётся обрезанным
+            log(f"выгрузку не удалось прочитать: {e}")
+            after = None
+        if after is not None:
+            status, lines = verify(before, after, offers=offers, products=products)
+            if status != "pending":
+                return status, lines
+            log(f"выгрузка ещё не обновилась (дата {after.date}), ждём")
+        if time.time() >= deadline:
+            return status, lines + [f"истекло время ожидания {max_wait} с"]
+        time.sleep(min(poll, max(1, deadline - time.time())))
+
+
+# Коды возврата для запуска по расписанию: любой ненулевой обязан быть замечен.
+EXIT_CODES = {
+    "verified": 0,
+    "partial": 2,
+    "failed": 3,
+    "pending": 4,
+    "unknown": 5,
+    "rate_limit": 6,
+    "invalid": 7,      # не прошла валидация
+    "tripped": 8,      # остановлено предохранителем
+    "locked": 9,       # уже запущен другой обмен
+}
+
+
+class AlreadyRunning(RuntimeError):
+    """Другой обмен уже идёт — параллельно запускаться нельзя."""
+
+
+class single_instance:
+    """Простейшая защита от параллельного запуска, на файле-замке.
+
+    Два обмена одновременно возьмут одинаковые имена файлов (import0_1.xml) и могут
+    перемешаться на стороне Tilda. Для одного сервера файлового замка достаточно.
+
+        with single_instance():
+            ...обмен...
+    """
+
+    def __init__(self, path=None, stale_after=3600):
+        self.path = path or os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "work", "exchange.lock")
+        self.stale_after = stale_after
+        self.fd = None
+
+    def __enter__(self):
+        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        # Замок от давно умершего процесса не должен блокировать работу навсегда.
+        if os.path.exists(self.path):
+            age = time.time() - os.path.getmtime(self.path)
+            if age > self.stale_after:
+                os.unlink(self.path)
+        try:
+            self.fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            raise AlreadyRunning(
+                f"Обмен уже идёт (замок {self.path}). Если процесс умер, удалите файл.")
+        os.write(self.fd, str(os.getpid()).encode())
+        return self
+
+    def __exit__(self, *exc):
+        if self.fd is not None:
+            os.close(self.fd)
+        try:
+            os.unlink(self.path)
+        except FileNotFoundError:
+            pass
+        return False

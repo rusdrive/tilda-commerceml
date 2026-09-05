@@ -6,7 +6,8 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from cml_safety import validate, plan, verify, DEFAULT_LIMITS  # noqa: E402
+from cml_safety import (validate, plan, verify, Snapshot, EXIT_CODES,  # noqa: E402
+                        single_instance, AlreadyRunning, DEFAULT_LIMITS)
 
 ok = True
 
@@ -99,6 +100,45 @@ print("\n7. Ложный успех Tilda ловится")
 # Tilda ответила success, но каталог не тронула — verify обязан это заметить.
 st5, _ = verify(before, before, offers=[{"id": "A1", "price": 777}])
 check("success без изменений → failed", st5 == "failed", st5)
+
+print("\n8. Не обновившаяся выгрузка — это ожидание, а не провал")
+# Та же дата фида: Tilda его ещё не пересобрала. Объявлять провал нельзя —
+# иначе каждый обмен будет давать ложную тревогу.
+same = Snapshot({"A1": {"price": "1000", "name": "Старое"}}, date="2026-09-05T15:35:00+03:00")
+same_after = Snapshot({"A1": {"price": "1000", "name": "Старое"}}, date="2026-09-05T15:35:00+03:00")
+st6, lines6 = verify(same, same_after, offers=[{"id": "A1", "price": 1500}])
+check("фид не обновился → pending", st6 == "pending", st6)
+check("сказано, что ждём", any("не обновилась" in l for l in lines6))
+
+# Выгрузка пересобралась, а изменений нет — вот это настоящий провал.
+fresh = Snapshot({"A1": {"price": "1000", "name": "Старое"}}, date="2026-09-05T15:50:00+03:00")
+st7, _ = verify(same, fresh, offers=[{"id": "A1", "price": 1500}])
+check("фид обновился, изменений нет → failed", st7 == "failed", st7)
+
+st8, _ = verify(same, Snapshot({"A1": {"price": "1500.00", "name": "Старое"}},
+                               date="2026-09-05T15:50:00+03:00"),
+                offers=[{"id": "A1", "price": 1500}])
+check("фид обновился, изменение есть → verified", st8 == "verified", st8)
+
+print("\n9. Коды возврата для расписания")
+check("успех — ноль", EXIT_CODES["verified"] == 0)
+check("все неуспешные исходы ненулевые",
+      all(v != 0 for k, v in EXIT_CODES.items() if k != "verified"))
+check("исходы не путаются между собой",
+      len(set(EXIT_CODES.values())) == len(EXIT_CODES))
+
+print("\n10. Защита от параллельного запуска")
+import tempfile
+lock_path = os.path.join(tempfile.mkdtemp(), "exchange.lock")
+with single_instance(lock_path):
+    try:
+        with single_instance(lock_path):
+            check("второй запуск должен падать", False)
+    except AlreadyRunning:
+        check("второй запуск отбит", True)
+check("замок снят после выхода", not os.path.exists(lock_path))
+with single_instance(lock_path):
+    check("после освобождения можно снова", True)
 
 print("\n" + ("ВСЁ ПРОШЛО" if ok else "ЕСТЬ ПРОВАЛЫ"))
 sys.exit(0 if ok else 1)
