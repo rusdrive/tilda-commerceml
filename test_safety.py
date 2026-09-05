@@ -192,7 +192,45 @@ rep_k, _ = plan(snap_by_sku, [{"id": "EXT-1", "sku": "SKU-1", "price": 1050}])
 check("существующий товар не считается новым", rep_k["new"] == [], str(rep_k["new"]))
 check("изменение цены засчитано", rep_k["price_changes"] == ["SKU-1"], str(rep_k))
 
-print("\n13. Старые запуски не копятся бесконечно")
+print("\n13. Неуникальный артикул не даёт ложных выводов")
+# В живом каталоге артикул бывает служебным кодом, проставленным многим товарам
+# (у нас так стоял код склада). По такому ключу нельзя понять, какой товар мы видим.
+dup_before = Snapshot({"СКЛАД": {"price": "1000", "name": "Один из многих"}},
+                      date="2026-09-05T15:35:00+03:00", ambiguous={"СКЛАД"})
+dup_after = Snapshot({"СКЛАД": {"price": "1500.00", "name": "Один из многих"}},
+                     date="2026-09-05T15:50:00+03:00", ambiguous={"СКЛАД"})
+st_d, lines_d = verify(dup_before, dup_after,
+                       offers=[{"id": "EXT-9", "sku": "СКЛАД", "price": 1500}])
+check("не выдаёт verified по неоднозначному ключу", st_d != "verified", st_d)
+check("сказано, почему пропущено", any("сверить нельзя" in l for l in lines_d),
+      "; ".join(lines_d))
+
+# Уникальный артикул рядом с неуникальным по-прежнему сверяется.
+mixed_before = Snapshot({"СКЛАД": {"price": "1000"}, "УНИК-1": {"price": "2000"}},
+                        date="2026-09-05T15:35:00+03:00", ambiguous={"СКЛАД"})
+mixed_after = Snapshot({"СКЛАД": {"price": "1000"}, "УНИК-1": {"price": "2500.00"}},
+                       date="2026-09-05T15:50:00+03:00", ambiguous={"СКЛАД"})
+st_m, _ = verify(mixed_before, mixed_after,
+                 offers=[{"id": "E1", "sku": "УНИК-1", "price": 2500},
+                         {"id": "E2", "sku": "СКЛАД", "price": 1500}])
+check("уникальный сверяется, неуникальный пропущен", st_m == "verified", st_m)
+
+print("\n14. Артефакты пишутся и когда обмен упал")
+# Исключение не сериализуется в JSON: без str() запись артефактов падала ровно там,
+# где нужнее всего — на разборе сбоя.
+fail_dir = tempfile.mkdtemp()
+rec_f = RunRecorder(base_dir=fail_dir, run_id="20260905-999999")
+rec_f.save_exchange([{"mode": "import", "http": 200, "response": "failure"}],
+                    error=RuntimeError("импорт не прошёл"))
+rec_f.save_verification("failed", ["обмен не прошёл"])
+code_f = rec_f.finish()
+check("артефакты сбоя записались", os.path.exists(os.path.join(rec_f.dir, "exchange.json")))
+check("текст ошибки сохранён",
+      "импорт не прошёл" in open(os.path.join(rec_f.dir, "exchange.json"),
+                                 encoding="utf-8").read())
+check("код возврата ненулевой", code_f != 0, str(code_f))
+
+print("\n15. Старые запуски не копятся бесконечно")
 rot_root = tempfile.mkdtemp()
 for day in range(1, 8):
     r = RunRecorder(base_dir=rot_root, run_id=f"2026090{day}-120000", keep=None)

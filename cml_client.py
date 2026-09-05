@@ -279,6 +279,13 @@ class CommerceML:
         мы не выдумываем своё имя, а увеличиваем НОМЕР: import0_2.xml, import0_3.xml —
         формат остаётся тем, который Тильда понимает.
         """
+        if offers_xml is not None and import_xml is None:
+            raise CommerceMLError(
+                "offers.xml без import.xml Тильда не импортирует: заливку принимает, "
+                "а на импорт отвечает «Import file is empty», затем «Import error». "
+                "Нужна пара — пришлите вместе с ценами хотя бы минимальный import.xml "
+                "с теми же товарами (см. build_stub_import_xml в cml_xml)."
+            )
         import_name = import_name or f"import0_{_attempt}.xml"
         offers_name = offers_name or f"offers0_{_attempt}.xml"
         self.connect()

@@ -45,6 +45,9 @@ c.send_catalog(import_xml=build_import_xml(products, "2026-09-05"),
                offers_xml=build_offers_xml(offers, "2026-09-05"))
 ```
 
+**Цены и остатки нельзя слать одним `offers.xml`** — нужна пара с `import.xml`,
+см. ниже.
+
 ## Для чего это хорошо подходит
 
 ### Обновлять цены по прайсу поставщика
@@ -54,12 +57,16 @@ c.send_catalog(import_xml=build_import_xml(products, "2026-09-05"),
 
 ```python
 from cml_client import CommerceML
-from cml_xml import build_offers_xml
+from cml_xml import build_offers_xml, build_stub_import_xml
 
 offers = [{"id": art, "sku": art, "name": name, "price": price, "quantity": qty}
           for art, name, price, qty in rows_from_price_list]
 
-CommerceML().send_catalog(offers_xml=build_offers_xml(offers, "2026-09-05"))
+# offers.xml сам по себе Tilda не импортирует — нужна пара. Спутник минимальный:
+# только Ид и Наименование, никаких описаний и разделов.
+CommerceML().send_catalog(
+    import_xml=build_stub_import_xml(offers, "2026-09-05"),
+    offers_xml=build_offers_xml(offers, "2026-09-05"))
 ```
 
 Тысячи позиций уходят одним обменом. Товары, которых нет в списке, не затрагиваются —
@@ -73,7 +80,8 @@ CommerceML().send_catalog(offers_xml=build_offers_xml(offers, "2026-09-05"))
 ```python
 offers = [{"id": art, "sku": art, "name": name, "price": price,
            "quantity": stock.get(art, 0)} for art, name, price in catalog]
-CommerceML().send_catalog(offers_xml=build_offers_xml(offers, today))
+CommerceML().send_catalog(import_xml=build_stub_import_xml(offers, today),
+                          offers_xml=build_offers_xml(offers, today))
 ```
 
 Нулевой остаток убирает товар из продажи (а если в магазине включено скрытие товаров не
@@ -191,6 +199,24 @@ products = [{"id": art, "sku": art, "name": name,
 подтвердила, только вручную через интерфейс.
 
 ## Грабли, на которых легко потерять день
+
+### `offers.xml` без `import.xml` не импортируется
+
+Заливку Tilda принимает с `success`, а на импорт отвечает так:
+
+```
+failure
+Import file is empty        (файл при этом не пустой)
+```
+
+и, если сменить номер файла, `failure / Import error`. Пара `import` + `offers`
+проходит сразу, с честным `progress`. Проверено на разных товарах, по три попытки.
+
+Это неочевидно и бьёт по самому частому сценарию — регулярному обновлению цен, где
+менять контент не хочется вовсе. Решение — послать вместе с ценами минимальный
+спутник: `build_stub_import_xml(offers, date)` кладёт в него только `Ид` и
+`Наименование`, без описаний, разделов и свойств. Клиент, получив `offers_xml` без
+`import_xml`, сразу отвечает понятной ошибкой, а не уходит в загадочный `Import error`.
 
 ### Имя файла обмена должно быть в формате 1С
 

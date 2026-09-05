@@ -27,9 +27,12 @@ class Snapshot(dict):
     пересобрался», а это разные вещи: первое — тревога, второе — просто подождать.
     """
 
-    def __init__(self, items, date=None):
+    def __init__(self, items, date=None, ambiguous=None):
         super().__init__(items)
         self.date = date
+        # Артикулы, встретившиеся в каталоге больше одного раза. По такому ключу
+        # нельзя понять, какой именно товар мы видим, — ни планировать, ни сверять.
+        self.ambiguous = set(ambiguous or ())
 
 def _catalog_key(item):
     """Под каким ключом товар виден в выгрузке YML.
@@ -214,12 +217,15 @@ def fetch_snapshot(yml_url, timeout=180, context=None, attempts=3):
             last = e
             continue
         feed_date = root.get("date")
-        items = {}
+        items, seen = {}, {}
         for offer in root.iter("offer"):
             def txt(tag):
                 el = offer.find(tag)
                 return el.text if el is not None else None
             key = txt("vendorCode") or offer.get("id")
+            # Артикул в каталоге бывает неуникальным: например, служебный код склада,
+            # проставленный сразу многим товарам.
+            seen[key] = seen.get(key, 0) + 1
             items[key] = {
                 "id": offer.get("id"),
                 "available": offer.get("available"),
@@ -243,12 +249,18 @@ def verify(before, after, offers=None, products=None):
         unknown  — ожидать было нечего
     """
     expected, confirmed, missing = 0, 0, []
+    ambiguous = getattr(after, "ambiguous", set()) | getattr(before, "ambiguous", set())
+    skipped = []
     stale = (getattr(before, "date", None) is not None
              and getattr(before, "date", None) == getattr(after, "date", None))
 
     for o in offers or []:
         ext = _catalog_key(o)
         if o.get("price") is None:
+            continue
+        if ext in ambiguous:
+            skipped.append(f"{ext}: артикул есть у нескольких товаров, "
+                           "сверить нельзя")
             continue
         expected += 1
         got = (after.get(ext) or {}).get("price")
@@ -264,6 +276,10 @@ def verify(before, after, offers=None, products=None):
         ext = _catalog_key(p)
         if not p.get("name"):
             continue
+        if ext in ambiguous:
+            skipped.append(f"{ext}: артикул есть у нескольких товаров, "
+                           "сверить нельзя")
+            continue
         expected += 1
         got = (after.get(ext) or {}).get("name")
         if got == p["name"]:
@@ -272,16 +288,17 @@ def verify(before, after, offers=None, products=None):
             missing.append(f"{ext}: ждали название {p['name']!r}, в каталоге {got!r}")
 
     if expected == 0:
-        return "unknown", ["нечего было проверять"]
+        return "unknown", (skipped or ["нечего было проверять"])
     if confirmed == expected:
-        return "verified", [f"подтверждено изменений: {confirmed} из {expected}"]
+        return "verified", [f"подтверждено изменений: {confirmed} из {expected}"] + skipped
     if stale:
         # Выгрузка та же самая — Tilda её ещё не пересобрала. Объявлять провал рано:
         # это ожидание, а не расхождение.
         return "pending", [f"выгрузка не обновилась (та же дата {after.date}), "
                            f"подтверждено {confirmed} из {expected} — ждём"]
     status = "failed" if confirmed == 0 else "partial"
-    return status, [f"подтверждено {confirmed} из {expected}"] + missing[:20]
+    return status, ([f"подтверждено {confirmed} из {expected}"]
+                    + missing[:20] + skipped[:20])
 
 
 def wait_and_verify(yml_url, before, offers=None, products=None,
@@ -469,9 +486,12 @@ class RunRecorder:
         self.summary["files"] = sums
 
     def save_exchange(self, client_log, error=None):
-        self._json("exchange.json", {"steps": client_log, "error": error})
+        # error приходит исключением, а оно не сериализуется в JSON: без str() запись
+        # артефактов падает ровно там, где она нужнее всего — на разборе сбоя.
+        text = None if error is None else f"{type(error).__name__}: {error}"
+        self._json("exchange.json", {"steps": client_log, "error": text})
         if error:
-            self.summary["error"] = str(error)
+            self.summary["error"] = text
 
     def save_verification(self, status, lines, after=None):
         self.summary["status"] = status

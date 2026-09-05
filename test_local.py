@@ -175,6 +175,16 @@ def main():
     ok &= check("по умолчанию import0_1.xml / offers0_1.xml",
                 names == {"import0_1.xml", "offers0_1.xml"}, ", ".join(sorted(names)))
 
+    print("\n5b. offers без import — понятная ошибка, а не загадочный Import error")
+    STATE.reset()
+    cp = CommerceML(url=url, login=LOGIN, password=PASSWORD, verbose=False)
+    try:
+        cp.send_catalog(offers_xml=off)
+        ok &= check("должно было упасть", False)
+    except CommerceMLError as e:
+        ok &= check("объяснено, что нужна пара", "без import.xml" in str(e), str(e)[:60])
+    ok &= check("на сервер ничего не ушло", STATE.files == {}, str(list(STATE.files)))
+
     print("\n6. dry_run: файлы залиты, импорт не запускался")
     STATE.reset()
     c2 = CommerceML(url=url, login=LOGIN, password=PASSWORD, verbose=False)

@@ -192,3 +192,26 @@ def build_offers_xml(offers, date, only_changes=True):
             _sub(of, "Количество", o["quantity"])
 
     return _serialize(root)
+
+
+def build_stub_import_xml(offers, date, only_changes=True):
+    """Минимальный import.xml под уже готовый offers.xml.
+
+    Tilda не импортирует offers.xml сам по себе — нужна пара. Если менять хочется
+    только цены и остатки, спутник должен быть как можно безобиднее: в нём лишь `Ид`
+    и `Наименование` (то же самое, что уже стоит в карточке), никаких описаний,
+    разделов и свойств.
+
+        offers = [{"id": ..., "sku": ..., "name": ..., "price": ...}, ...]
+        client.send_catalog(import_xml=build_stub_import_xml(offers, date),
+                            offers_xml=build_offers_xml(offers, date))
+    """
+    products = []
+    for o in offers:
+        if not o.get("name"):
+            raise ValueError(
+                f"для {o.get('id')!r} нет name: в спутник import.xml нужно название, "
+                "иначе Tilda не с чем сопоставить товар"
+            )
+        products.append({"id": o["id"], "sku": o.get("sku"), "name": o["name"]})
+    return build_import_xml(products, date, only_changes=only_changes)
