@@ -194,18 +194,23 @@ class CommerceML:
 
     def send_catalog(self, import_xml=None, offers_xml=None,
                      import_name=None, offers_name=None,
-                     dry_run=False):
+                     dry_run=False, _attempt=1):
         """Полный обмен. dry_run=True — залить файлы, но не импортировать
         (каталог остаётся нетронутым).
 
-        Имена файлов по умолчанию УНИКАЛЬНЫЕ. Тильда помнит уже импортированное имя и
-        на повторный импорт того же отвечает `failure / Import file is empty` — притом
-        что файл не пустой. Ловится это плохо: сообщение уводит искать проблему в
-        содержимом. Под новым именем тот же файл проходит сразу.
+        ИМЕНА ФАЙЛОВ ВАЖНЫ. Тильда обрабатывает только имена в формате 1С —
+        `import0_N.xml` и `offers0_N.xml`. Файл с произвольным именем (например
+        `import0_20260905181811.xml`) она принимает с `success` и на импорт отвечает
+        `success` — но НИЧЕГО не делает: в её логе остаётся «Импорт товаров отменён», а
+        товары не появляются. Снаружи обмен при этом выглядит безупречно.
+
+        Отдельная беда: повторный импорт файла под тем же именем иногда отклоняется как
+        `failure / Import file is empty`, хотя файл не пустой. Поэтому при такой ошибке
+        мы не выдумываем своё имя, а увеличиваем НОМЕР: import0_2.xml, import0_3.xml —
+        формат остаётся тем, который Тильда понимает.
         """
-        stamp = time.strftime("%Y%m%d%H%M%S")
-        import_name = import_name or f"import0_{stamp}.xml"
-        offers_name = offers_name or f"offers0_{stamp}.xml"
+        import_name = import_name or f"import0_{_attempt}.xml"
+        offers_name = offers_name or f"offers0_{_attempt}.xml"
         self.connect()
         result = {"uploaded": [], "imported": []}
         if import_xml is not None:
@@ -216,12 +221,20 @@ class CommerceML:
             result["uploaded"].append(offers_name)
         if dry_run:
             return result
-        if import_xml is not None:
-            self.do_import(import_name)
-            result["imported"].append(import_name)
-        if offers_xml is not None:
-            self.do_import(offers_name)
-            result["imported"].append(offers_name)
+        try:
+            if import_xml is not None:
+                self.do_import(import_name)
+                result["imported"].append(import_name)
+            if offers_xml is not None:
+                self.do_import(offers_name)
+                result["imported"].append(offers_name)
+        except CommerceMLError as e:
+            # «Import file is empty» на непустом файле — это про имя, а не про
+            # содержимое. Пробуем следующий номер, сохраняя формат имени.
+            if "empty" in str(e).lower() and _attempt < 5:
+                return self.send_catalog(import_xml=import_xml, offers_xml=offers_xml,
+                                         dry_run=dry_run, _attempt=_attempt + 1)
+            raise
         return result
 
     def save_log(self, path):

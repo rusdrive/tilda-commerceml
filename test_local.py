@@ -167,16 +167,13 @@ def main():
     except CommerceMLError as e:
         ok &= check("падает с текстом сервера", "Auth required" in str(e), str(e)[:80])
 
-    print("\n5a. Имена файлов по умолчанию — уникальные")
-    # Тильда на повторный импорт того же имени отвечает 'Import file is empty',
-    # хотя файл не пустой. Поэтому имена по умолчанию должны быть разными.
+    print("\n5a. Имена файлов — в формате 1С, иначе Tilda молча не импортирует")
     STATE.reset()
     cu = CommerceML(url=url, login=LOGIN, password=PASSWORD, verbose=False)
     cu.send_catalog(import_xml=imp, offers_xml=off)
     names = set(STATE.files)
-    ok &= check("имена не фиксированные",
-                "import0_1.xml" not in names and "offers0_1.xml" not in names,
-                ", ".join(sorted(names)))
+    ok &= check("по умолчанию import0_1.xml / offers0_1.xml",
+                names == {"import0_1.xml", "offers0_1.xml"}, ", ".join(sorted(names)))
 
     print("\n6. dry_run: файлы залиты, импорт не запускался")
     STATE.reset()
