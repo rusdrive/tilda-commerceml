@@ -10,6 +10,8 @@
 
 Модуль ничего не отправляет и не требует сети, кроме verify_by_yml.
 """
+import hashlib
+import json
 import os
 import re
 import time
@@ -355,3 +357,110 @@ class single_instance:
         except FileNotFoundError:
             pass
         return False
+
+
+# --- Артефакты запуска ----------------------------------------------------
+
+def _client_version(base_dir):
+    """Отметка версии кода: короткий commit hash, если это git-репозиторий."""
+    head = os.path.join(base_dir, ".git", "HEAD")
+    try:
+        with open(head, encoding="utf-8") as f:
+            ref = f.read().strip()
+        if ref.startswith("ref: "):
+            with open(os.path.join(base_dir, ".git", ref[5:]), encoding="utf-8") as f:
+                return f.read().strip()[:12]
+        return ref[:12]
+    except OSError:
+        return None
+
+
+class RunRecorder:
+    """Складывает всё об одном обмене в отдельный каталог.
+
+    Нужно ровно для одного: когда через неделю в каталоге найдётся что-то странное,
+    можно посмотреть, что именно и когда мы отправляли, а не гадать.
+
+        runs/20260905-153500/
+            summary.txt          короткий человеческий итог
+            plan.json            что собирались изменить и какие пороги стояли
+            import0_1.xml        отправленные файлы как есть
+            offers0_1.xml
+            exchange.json        ответы сервера по шагам
+            verification.json    вердикт проверки и даты выгрузок
+
+    Пароль и заголовок Authorization сюда не попадают: клиент их в лог не пишет.
+    """
+
+    def __init__(self, base_dir=None, run_id=None):
+        root = base_dir or os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "runs")
+        self.run_id = run_id or time.strftime("%Y%m%d-%H%M%S")
+        self.dir = os.path.join(root, self.run_id)
+        os.makedirs(self.dir, exist_ok=True)
+        self.base_dir = os.path.dirname(os.path.abspath(__file__))
+        self.summary = {"run_id": self.run_id,
+                        "client_version": _client_version(self.base_dir)}
+
+    def _write(self, name, text):
+        path = os.path.join(self.dir, name)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+        return path
+
+    def _json(self, name, obj):
+        return self._write(name, json.dumps(obj, ensure_ascii=False, indent=1))
+
+    def save_plan(self, report, tripped=(), limits=None, before=None):
+        self.summary["feed_date_before"] = getattr(before, "date", None)
+        self._json("plan.json", {
+            "report": report,
+            "tripped": list(tripped),
+            "limits": {**DEFAULT_LIMITS, **(limits or {})},
+            "feed_date_before": getattr(before, "date", None),
+        })
+
+    def save_files(self, **files):
+        """save_files(**{'import0_1.xml': xml, 'offers0_1.xml': xml})"""
+        sums = {}
+        for name, data in files.items():
+            if data is None:
+                continue
+            raw = data.encode("windows-1251", "xmlcharrefreplace") \
+                if isinstance(data, str) else data
+            with open(os.path.join(self.dir, name), "wb") as f:
+                f.write(raw)
+            sums[name] = hashlib.sha256(raw).hexdigest()[:16]
+        self.summary["files"] = sums
+
+    def save_exchange(self, client_log, error=None):
+        self._json("exchange.json", {"steps": client_log, "error": error})
+        if error:
+            self.summary["error"] = str(error)
+
+    def save_verification(self, status, lines, after=None):
+        self.summary["status"] = status
+        self.summary["feed_date_after"] = getattr(after, "date", None)
+        self.summary["exit_code"] = EXIT_CODES.get(status, 1)
+        self._json("verification.json", {
+            "status": status,
+            "details": list(lines),
+            "feed_date_after": getattr(after, "date", None),
+        })
+
+    def finish(self):
+        """Записать короткий итог и вернуть код возврата для планировщика."""
+        code = self.summary.get("exit_code", EXIT_CODES["unknown"])
+        lines = [f"запуск:   {self.run_id}",
+                 f"версия:   {self.summary.get('client_version') or 'неизвестна'}",
+                 f"статус:   {self.summary.get('status', 'не проверялся')}",
+                 f"код:      {code}",
+                 f"выгрузка: {self.summary.get('feed_date_before')} → "
+                 f"{self.summary.get('feed_date_after')}"]
+        if self.summary.get("error"):
+            lines.append(f"ошибка:   {self.summary['error']}")
+        for name, digest in (self.summary.get("files") or {}).items():
+            lines.append(f"файл:     {name}  sha256:{digest}")
+        self._write("summary.txt", "\n".join(lines) + "\n")
+        self._json("summary.json", self.summary)
+        return code

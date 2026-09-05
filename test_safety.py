@@ -7,7 +7,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from cml_safety import (validate, plan, verify, Snapshot, EXIT_CODES,  # noqa: E402
-                        single_instance, AlreadyRunning, DEFAULT_LIMITS)
+                        single_instance, AlreadyRunning, DEFAULT_LIMITS,
+                        RunRecorder)
 
 ok = True
 
@@ -139,6 +140,42 @@ with single_instance(lock_path):
 check("замок снят после выхода", not os.path.exists(lock_path))
 with single_instance(lock_path):
     check("после освобождения можно снова", True)
+
+print("\n11. Артефакты запуска")
+import tempfile, json as _json
+runs_dir = tempfile.mkdtemp()
+rec = RunRecorder(base_dir=runs_dir, run_id="20260905-153500")
+before_snap = Snapshot({"A1": {"price": "1000"}}, date="2026-09-05T15:35:00+03:00")
+after_snap = Snapshot({"A1": {"price": "1500.00"}}, date="2026-09-05T15:50:00+03:00")
+rep, trip = plan(before_snap, [{"id": "A1", "price": 1500}])
+rec.save_plan(rep, trip, before=before_snap)
+rec.save_files(**{"import0_1.xml": "<xml>товар</xml>", "offers0_1.xml": "<xml>цена</xml>"})
+rec.save_exchange([{"mode": "checkauth", "http": 200, "response": "success"}])
+st, det = verify(before_snap, after_snap, offers=[{"id": "A1", "price": 1500}])
+rec.save_verification(st, det, after=after_snap)
+code = rec.finish()
+
+files = set(os.listdir(rec.dir))
+check("все файлы на месте",
+      {"summary.txt", "summary.json", "plan.json", "verification.json",
+       "exchange.json", "import0_1.xml", "offers0_1.xml"} <= files,
+      ", ".join(sorted(files)))
+check("код возврата от статуса", code == EXIT_CODES["verified"], str(code))
+summary = _json.load(open(os.path.join(rec.dir, "summary.json"), encoding="utf-8"))
+check("записаны обе даты выгрузки",
+      summary["feed_date_before"] == "2026-09-05T15:35:00+03:00"
+      and summary["feed_date_after"] == "2026-09-05T15:50:00+03:00")
+check("записаны контрольные суммы файлов", len(summary["files"]) == 2, str(summary["files"]))
+check("записаны применённые пороги",
+      _json.load(open(os.path.join(rec.dir, "plan.json"), encoding="utf-8"))["limits"]
+      ["max_new_products"] == DEFAULT_LIMITS["max_new_products"])
+# XML лежит в той же кодировке, в какой уходил на сервер, — читаем байтами.
+dump = b"".join(open(os.path.join(rec.dir, f), "rb").read() for f in files)
+check("секретов в артефактах нет",
+      not any(w in dump for w in (b"password", b"Authorization", b"Basic ")))
+check("XML сохранён как отправляли (windows-1251)",
+      open(os.path.join(rec.dir, "import0_1.xml"), "rb").read().decode("windows-1251")
+      == "<xml>товар</xml>")
 
 print("\n" + ("ВСЁ ПРОШЛО" if ok else "ЕСТЬ ПРОВАЛЫ"))
 sys.exit(0 if ok else 1)
