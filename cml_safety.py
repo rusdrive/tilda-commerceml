@@ -31,6 +31,17 @@ class Snapshot(dict):
         super().__init__(items)
         self.date = date
 
+def _catalog_key(item):
+    """Под каким ключом товар виден в выгрузке YML.
+
+    В YML есть `vendorCode` — это АРТИКУЛ (тег `<Артикул>`), а внешнего кода
+    (`<Ид>`) там нет вовсе. Мы же адресуем товары по `<Ид>`. Если слать в оба тега
+    одно значение, разницы не видно, но в общем случае это разные поля — и тогда
+    сверка по `id` не найдёт ничего и объявит ложный провал.
+    """
+    return str(item.get("sku") or item.get("id") or "")
+
+
 # --- 1. Валидация ---------------------------------------------------------
 
 MAX_NAME = 500
@@ -129,7 +140,7 @@ def plan(snapshot, offers=None, limits=None):
     report = {"new": [], "price_changes": [], "zero_stock": [], "big_price_jumps": []}
 
     for o in offers or []:
-        ext = str(o.get("id", ""))
+        ext = _catalog_key(o)
         known = snapshot.get(ext)
         if known is None:
             report["new"].append(ext)
@@ -236,7 +247,7 @@ def verify(before, after, offers=None, products=None):
              and getattr(before, "date", None) == getattr(after, "date", None))
 
     for o in offers or []:
-        ext = str(o.get("id", ""))
+        ext = _catalog_key(o)
         if o.get("price") is None:
             continue
         expected += 1
@@ -250,7 +261,7 @@ def verify(before, after, offers=None, products=None):
         missing.append(f"{ext}: ждали цену {o['price']}, в каталоге {got}")
 
     for p in products or []:
-        ext = str(p.get("id", ""))
+        ext = _catalog_key(p)
         if not p.get("name"):
             continue
         expected += 1

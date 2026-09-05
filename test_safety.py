@@ -177,7 +177,22 @@ check("XML сохранён как отправляли (windows-1251)",
       open(os.path.join(rec.dir, "import0_1.xml"), "rb").read().decode("windows-1251")
       == "<xml>товар</xml>")
 
-print("\n12. Старые запуски не копятся бесконечно")
+print("\n12. Сверка идёт по артикулу, а не по внешнему коду")
+# В YML есть vendorCode (артикул). Внешнего кода (<Ид>) там нет вовсе.
+# Если сверять по id, товар не найдётся и получится ложный провал.
+snap_by_sku = Snapshot({"SKU-1": {"price": "1000", "name": "Товар"}},
+                       date="2026-09-05T15:35:00+03:00")
+after_by_sku = Snapshot({"SKU-1": {"price": "1500.00", "name": "Товар"}},
+                        date="2026-09-05T15:50:00+03:00")
+st_k, lines_k = verify(snap_by_sku, after_by_sku,
+                       offers=[{"id": "EXT-1", "sku": "SKU-1", "price": 1500}])
+check("разные Ид и артикул → verified", st_k == "verified", f"{st_k}: {lines_k}")
+
+rep_k, _ = plan(snap_by_sku, [{"id": "EXT-1", "sku": "SKU-1", "price": 1050}])
+check("существующий товар не считается новым", rep_k["new"] == [], str(rep_k["new"]))
+check("изменение цены засчитано", rep_k["price_changes"] == ["SKU-1"], str(rep_k))
+
+print("\n13. Старые запуски не копятся бесконечно")
 rot_root = tempfile.mkdtemp()
 for day in range(1, 8):
     r = RunRecorder(base_dir=rot_root, run_id=f"2026090{day}-120000", keep=None)
