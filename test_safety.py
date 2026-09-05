@@ -177,5 +177,19 @@ check("XML сохранён как отправляли (windows-1251)",
       open(os.path.join(rec.dir, "import0_1.xml"), "rb").read().decode("windows-1251")
       == "<xml>товар</xml>")
 
+print("\n12. Старые запуски не копятся бесконечно")
+rot_root = tempfile.mkdtemp()
+for day in range(1, 8):
+    r = RunRecorder(base_dir=rot_root, run_id=f"2026090{day}-120000", keep=None)
+    r.save_verification("verified", ["ок"]); r.finish()
+check("создано 7 запусков", len(os.listdir(rot_root)) == 7)
+RunRecorder.rotate(rot_root, keep=3)
+left = sorted(os.listdir(rot_root))
+check("осталось 3 последних", left == ["20260905-120000", "20260906-120000", "20260907-120000"],
+      ", ".join(left))
+r_new = RunRecorder(base_dir=rot_root, run_id="20260908-120000", keep=3)
+check("новый запуск сам подчищает старые", len(os.listdir(rot_root)) == 3,
+      ", ".join(sorted(os.listdir(rot_root))))
+
 print("\n" + ("ВСЁ ПРОШЛО" if ok else "ЕСТЬ ПРОВАЛЫ"))
 sys.exit(0 if ok else 1)

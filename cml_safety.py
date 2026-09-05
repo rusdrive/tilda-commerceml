@@ -392,15 +392,39 @@ class RunRecorder:
     Пароль и заголовок Authorization сюда не попадают: клиент их в лог не пишет.
     """
 
-    def __init__(self, base_dir=None, run_id=None):
+    def __init__(self, base_dir=None, run_id=None, keep=50):
         root = base_dir or os.path.join(
             os.path.dirname(os.path.abspath(__file__)), "runs")
         self.run_id = run_id or time.strftime("%Y%m%d-%H%M%S")
         self.dir = os.path.join(root, self.run_id)
         os.makedirs(self.dir, exist_ok=True)
+        if keep:
+            self.rotate(root, keep)
         self.base_dir = os.path.dirname(os.path.abspath(__file__))
         self.summary = {"run_id": self.run_id,
                         "client_version": _client_version(self.base_dir)}
+
+    @staticmethod
+    def rotate(root, keep=50):
+        """Оставить только `keep` последних запусков.
+
+        Без этого артефакты копятся бесконечно, а при обмене всем каталогом каждый
+        запуск весит немало. Удаляем самые старые по имени каталога — оно начинается
+        с даты, поэтому обычная сортировка и есть хронология.
+        """
+        try:
+            runs = sorted(d for d in os.listdir(root)
+                          if os.path.isdir(os.path.join(root, d)))
+        except FileNotFoundError:
+            return []
+        dropped = []
+        for old_run in runs[:-keep] if keep else []:
+            path = os.path.join(root, old_run)
+            for name in os.listdir(path):
+                os.unlink(os.path.join(path, name))
+            os.rmdir(path)
+            dropped.append(old_run)
+        return dropped
 
     def _write(self, name, text):
         path = os.path.join(self.dir, name)
