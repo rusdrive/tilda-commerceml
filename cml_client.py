@@ -42,6 +42,10 @@ class CommerceMLError(RuntimeError):
     """Сервер ответил не 'success' (или не ответил вовсе)."""
 
 
+class RateLimitError(CommerceMLError):
+    """Коннектор отбивается по частоте запросов — нужна пауза, а не повтор."""
+
+
 def make_ssl_context(insecure=False, ca_file=None):
     """Контекст TLS с настоящей проверкой сертификата.
 
@@ -157,7 +161,22 @@ class CommerceML:
             short = text if len(text) < 400 else text[:400] + " …"
             print(f"[{mode}{'/' + filename if filename else ''}] HTTP {status}: "
                   f"{short.strip()!r}")
+        self._check_rate_limit(text)
         return status, text
+
+    def _check_rate_limit(self, text):
+        """Лимит частоты обменов у коннектора.
+
+        Отбивается уже checkauth: `failure / Many requests. Please try again`. Рядом на
+        нормальных файлах появляется невнятный `Import error` — это он же. Повторять
+        бессмысленно и вредно: помогает только пауза.
+        """
+        if "many requests" in text.lower():
+            raise RateLimitError(
+                "Коннектор отвечает «Many requests» — сработал лимит частоты обменов. "
+                "Нужна пауза (у нас помогала пауза в десятки минут); повторять сразу "
+                "бесполезно."
+            )
 
     @staticmethod
     def _status(text):
@@ -282,6 +301,8 @@ class CommerceML:
         except CommerceMLError as e:
             # «Import file is empty» на непустом файле — это про имя, а не про
             # содержимое. Пробуем следующий номер, сохраняя формат имени.
+            if isinstance(e, RateLimitError):
+                raise
             if "empty" in str(e).lower() and _attempt < 5:
                 return self.send_catalog(import_xml=import_xml, offers_xml=offers_xml,
                                          dry_run=dry_run, _attempt=_attempt + 1)
