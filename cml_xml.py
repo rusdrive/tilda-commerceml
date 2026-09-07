@@ -149,6 +149,13 @@ def build_offers_xml(offers, date, only_changes=True):
         sku                    — артикул
         price                  — цена
         quantity               — остаток
+        variant_of             — внешний код РОДИТЕЛЬСКОГО товара: делает запись
+                                 вариантом, Ид собирается как «родитель#вариант»
+        characteristics        — {название: значение} варианта (Размер, Цвет…);
+                                 их же принято перечислять в name
+        prices                 — [(ИдТипаЦены, значение), …] для обычной и старой цены;
+                                 коды типов должны совпадать с прописанными в настройках
+                                 синхронизации Tilda, иначе старая цена не появится
     """
     root = _root(date)
     pack = _sub(root, "ПакетПредложений")
@@ -167,7 +174,10 @@ def build_offers_xml(offers, date, only_changes=True):
     offers_el = _sub(pack, "Предложения")
     for o in offers:
         of = _sub(offers_el, "Предложение")
-        _sub(of, "Ид", o["id"])
+        # Для варианта Ид собирается как «родитель#вариант» — иначе Tilda заведёт
+        # отдельный товар вместо варианта существующего.
+        oid = f"{o['variant_of']}#{o['id']}" if o.get("variant_of") else o["id"]
+        _sub(of, "Ид", oid)
         if o.get("sku"):
             _sub(of, "Артикул", o["sku"])
         if o.get("name"):
@@ -188,6 +198,17 @@ def build_offers_xml(offers, date, only_changes=True):
                 _sub(pr, "Валюта", CURRENCY)
                 _sub(pr, "Единица", UNIT)
                 _sub(pr, "Коэффициент", 1)
+        # Варианты товара (размер, цвет и т.п.). Схему подсказала поддержка Tilda:
+        # характеристики идут в <ХарактеристикиТовара>, а связь с родителем — через
+        # внешний код вида «код-родителя#код-варианта». По решётке Tilda и понимает,
+        # что это вариант, а не отдельный товар. Значения характеристик принято
+        # дублировать в названии варианта.
+        if o.get("variant_of"):
+            chars = _sub(of, "ХарактеристикиТовара")
+            for name, value in (o.get("characteristics") or {}).items():
+                ch = _sub(chars, "ХарактеристикаТовара")
+                _sub(ch, "Наименование", name)
+                _sub(ch, "Значение", value)
         if o.get("quantity") is not None:
             _sub(of, "Количество", o["quantity"])
 
