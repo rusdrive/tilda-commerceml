@@ -165,11 +165,24 @@ def build_offers_xml(offers, date, only_changes=True):
     _sub(pack, "ИдКаталога", CATALOG_ID)
     _sub(pack, "Наименование", "Пакет предложений")
 
+    # Каждый тип цены, который встретится в предложениях, обязан быть объявлен здесь.
+    # Иначе Tilda не понимает запись целиком и молча пропускает товар: в её логе
+    # «Найдено товаров: 1», но «Обновлено: 0», и даже обычная цена не применяется.
+    used = []
+    for o in offers:
+        for type_id, _ in (o.get("prices") or []):
+            if type_id not in used:
+                used.append(type_id)
+    if not used:
+        used = [PRICE_TYPE_ID]
+
     types = _sub(pack, "ТипыЦен")
-    pt = _sub(types, "ТипЦены")
-    _sub(pt, "Ид", PRICE_TYPE_ID)
-    _sub(pt, "Наименование", PRICE_TYPE_NAME)
-    _sub(pt, "Валюта", CURRENCY)
+    for type_id in used:
+        pt = _sub(types, "ТипЦены")
+        _sub(pt, "Ид", type_id)
+        _sub(pt, "Наименование",
+             PRICE_TYPE_NAME if type_id == PRICE_TYPE_ID else type_id)
+        _sub(pt, "Валюта", CURRENCY)
 
     offers_el = _sub(pack, "Предложения")
     for o in offers:

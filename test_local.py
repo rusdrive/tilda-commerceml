@@ -185,6 +185,24 @@ def main():
         ok &= check("объяснено, что нужна пара", "без import.xml" in str(e), str(e)[:60])
     ok &= check("на сервер ничего не ушло", STATE.files == {}, str(list(STATE.files)))
 
+    print("\n5c. Все типы цен объявлены в пакете")
+    # Если тип цены использован, но не объявлен, Tilda пропускает товар целиком:
+    # в её логе «Найдено товаров: 1», но «Обновлено: 0» — и даже обычная цена
+    # не применяется. Ловили это на живом каталоге.
+    import re as _re
+    two = build_offers_xml([{"id": "A1", "name": "Товар", "quantity": 1,
+                             "prices": [("price-old", 200), ("price-sale", 100)]}],
+                           "2026-09-08")
+    declared = _re.findall(r"<ТипЦены><Ид>(.*?)</Ид>", two)
+    usedids = _re.findall(r"<ИдТипаЦены>(.*?)</ИдТипаЦены>", two)
+    ok &= check("объявлены оба типа", set(declared) == {"price-old", "price-sale"},
+                ", ".join(declared))
+    ok &= check("использованные типы все объявлены", set(usedids) <= set(declared),
+                ", ".join(usedids))
+    one = build_offers_xml([{"id": "A1", "name": "Товар", "price": 100}], "2026-09-08")
+    ok &= check("для обычной цены объявлен тип по умолчанию",
+                len(_re.findall(r"<ТипЦены>", one)) == 1)
+
     print("\n6. dry_run: файлы залиты, импорт не запускался")
     STATE.reset()
     c2 = CommerceML(url=url, login=LOGIN, password=PASSWORD, verbose=False)
