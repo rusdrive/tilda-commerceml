@@ -8,7 +8,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from cml_safety import (validate, plan, verify, Snapshot, EXIT_CODES,  # noqa: E402
                         single_instance, AlreadyRunning, DEFAULT_LIMITS,
-                        RunRecorder)
+                        RunRecorder, ExchangeRate, RateLimitWouldTrip)
 
 ok = True
 
@@ -243,6 +243,24 @@ check("осталось 3 последних", left == ["20260905-120000", "2026
 r_new = RunRecorder(base_dir=rot_root, run_id="20260908-120000", keep=3)
 check("новый запуск сам подчищает старые", len(os.listdir(rot_root)) == 3,
       ", ".join(sorted(os.listdir(rot_root))))
+
+print("\n16. Лимит частоты соблюдается до начала обмена")
+# Дешевле не начинать, чем получить Many requests посреди обмена: файлы уже залиты,
+# импорт отбит, состояние непонятное.
+rate_path = os.path.join(tempfile.mkdtemp(), "rate.json")
+r = ExchangeRate(path=rate_path)
+r.check(); r.record()
+r.check(); r.record()
+try:
+    r.check()
+    check("третий обмен должен быть отбит", False)
+except RateLimitWouldTrip as e:
+    check("третий обмен отбит", "Лимит" in str(e), str(e)[:50])
+check("сказано, сколько ждать", r.wait_seconds() > 0, f"{r.wait_seconds()} с")
+check("ограничение переживает перезапуск",
+      ExchangeRate(path=rate_path).wait_seconds() > 0)
+check("после окна снова можно",
+      ExchangeRate(path=rate_path, window=0).wait_seconds() == 0)
 
 print("\n" + ("ВСЁ ПРОШЛО" if ok else "ЕСТЬ ПРОВАЛЫ"))
 sys.exit(0 if ok else 1)

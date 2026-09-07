@@ -519,3 +519,61 @@ class RunRecorder:
         self._write("summary.txt", "\n".join(lines) + "\n")
         self._json("summary.json", self.summary)
         return code
+
+
+# --- Соблюдение лимита частоты -------------------------------------------
+
+# Цифру назвала поддержка Tilda: 2 выгрузки плюс 2 запроса заказов за 5 минут.
+RATE_WINDOW_SECONDS = 300
+RATE_MAX_EXCHANGES = 2
+
+
+class RateLimitWouldTrip(RuntimeError):
+    """Обмен не начат: следующий запуск упёрся бы в лимит коннектора."""
+
+
+class ExchangeRate:
+    """Не даёт обмену начаться чаще, чем разрешает Tilda.
+
+    Дешевле не начинать обмен, чем получить `Many requests` посреди него: файлы уже
+    залиты, а импорт отбит — состояние непонятное. Отметки времени лежат в файле,
+    поэтому ограничение переживает перезапуск и работает между отдельными запусками
+    по расписанию.
+    """
+
+    def __init__(self, path=None, window=RATE_WINDOW_SECONDS, limit=RATE_MAX_EXCHANGES):
+        self.path = path or os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "runs", ".rate.json")
+        self.window = window
+        self.limit = limit
+
+    def _load(self):
+        try:
+            with open(self.path, encoding="utf-8") as f:
+                stamps = json.load(f)
+        except (OSError, ValueError):
+            return []
+        now = time.time()
+        return [t for t in stamps if now - t < self.window]
+
+    def wait_seconds(self):
+        """Сколько ждать до следующего разрешённого обмена. 0 — можно сейчас."""
+        stamps = self._load()
+        if len(stamps) < self.limit:
+            return 0
+        return max(0, int(self.window - (time.time() - min(stamps)) + 1))
+
+    def check(self):
+        left = self.wait_seconds()
+        if left:
+            raise RateLimitWouldTrip(
+                f"Лимит Tilda — {self.limit} обмена за {self.window // 60} минут. "
+                f"Следующий можно начинать через {left} с."
+            )
+
+    def record(self):
+        stamps = self._load()
+        stamps.append(time.time())
+        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        with open(self.path, "w", encoding="utf-8") as f:
+            json.dump(stamps, f)
